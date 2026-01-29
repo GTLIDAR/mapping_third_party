@@ -125,7 +125,8 @@ bool ElevationMap::add(const PointCloudType::Ptr pointCloud, Eigen::VectorXf& po
     auto& sensorYatLowestScan = sensorYatLowestScanLayer(index(0), index(1));
     auto& sensorZatLowestScan = sensorZatLowestScanLayer(index(0), index(1));
 
-    const float& pointVariance = pointCloudVariances(i);
+    // Ensure minimum variance to avoid numerical issues (division by zero, NaN propagation)
+    const float pointVariance = std::max(pointCloudVariances(i), static_cast<float>(parameters.minVariance_));
     bool isValid = std::all_of(basicLayers_.begin(), basicLayers_.end(),
                                [&](Eigen::Ref<const grid_map::Matrix> layer) { return std::isfinite(layer(index(0), index(1))); });
     if (!isValid) {
