@@ -18,7 +18,6 @@
 #include <OGRE/OgreTechnique.h>
 #include <OGRE/OgreTextureManager.h>
 #include <OGRE/OgreVector3.h>
-#include <rviz/ogre_helpers/billboard_line.h>
 #include <rviz/uniform_string_stream.h>
 #include <chrono>
 
@@ -29,12 +28,9 @@
 
 namespace grid_map_rviz_plugin {
 
-GridMapVisual::GridMapVisual(Ogre::SceneManager* sceneManager, Ogre::SceneNode* parentNode) : manualObject_(0), haveMap_(false) {
+GridMapVisual::GridMapVisual(Ogre::SceneManager* sceneManager, Ogre::SceneNode* parentNode) : manualObject_(0), gridLinesObject_(0), haveMap_(false) {
   sceneManager_ = sceneManager;
   frameNode_ = parentNode->createChildSceneNode();
-
-  // Create BillboardLine object.
-  meshLines_.reset(new rviz::BillboardLine(sceneManager_, frameNode_));
 }
 
 GridMapVisual::~GridMapVisual() {
@@ -43,6 +39,12 @@ GridMapVisual::~GridMapVisual() {
     sceneManager_->destroyManualObject(manualObject_);
     material_->unload();
     Ogre::MaterialManager::getSingleton().remove(material_->getName());
+  }
+  // Destroy the grid lines ManualObject if it was created.
+  if (gridLinesObject_) {
+    sceneManager_->destroyManualObject(gridLinesObject_);
+    gridLinesMaterial_->unload();
+    Ogre::MaterialManager::getSingleton().remove(gridLinesMaterial_->getName());
   }
 
   // Destroy the frame node.
@@ -96,11 +98,9 @@ void GridMapVisual::computeVisualization(float alpha, bool showGridLines, bool f
   const size_t nVertices = cols * rows;
   initializeAndBeginManualObject(nVertices);
 
-  // Reset the mesh lines.
-  meshLines_->clear();
-  if (showGridLines) {
-    initializeMeshLines(cols, rows, resolution, alpha, gridLineThickness);
-  }
+  // Reset / initialize the grid lines ManualObject.
+  const double halfLineWidth = resolution * gridLineThickness * 0.5;
+  initializeGridLinesObject(showGridLines, alpha, halfLineWidth);
   // Make sure gridCellDecimation is within a valid range
   gridCellDecimation = std::max(gridCellDecimation, 1);
 
@@ -210,35 +210,53 @@ void GridMapVisual::computeVisualization(float alpha, bool showGridLines, bool f
       std::vector<Ogre::Vector3> meshLineVertices = computeMeshLineVertices(i, j, gridCellDecimation, isNthRow, isNthCol, isLastRow,
                                                                             isLastCol, resolution, topLeft, heightOrFlatData, isValid);
 
-      // plot grid lines if we have enough points
+      // plot grid lines if we have enough points (using lightweight ManualObject quads for thickness)
       if (meshLineVertices.size() > 2) {
-        meshLines_->addPoint(meshLineVertices[0]);
-        meshLines_->addPoint(meshLineVertices[1]);
-        meshLines_->newLine();
+        auto addLineQuad = [&](const Ogre::Vector3& v0, const Ogre::Vector3& v1) {
+          // Compute perpendicular offset in XY plane for line width.
+          Ogre::Vector3 dir = v1 - v0;
+          Ogre::Vector3 perp(-dir.y, dir.x, 0.0f);
+          float len = perp.length();
+          if (len > 1e-6f) {
+            perp *= static_cast<float>(halfLineWidth) / len;
+          } else {
+            perp = Ogre::Vector3(static_cast<float>(halfLineWidth), 0.0f, 0.0f);
+          }
+          // Small Z offset to render above the mesh surface.
+          const float zOffset = 0.001f;
+          Ogre::Vector3 a = v0 - perp; a.z += zOffset;
+          Ogre::Vector3 b = v0 + perp; b.z += zOffset;
+          Ogre::Vector3 c = v1 + perp; c.z += zOffset;
+          Ogre::Vector3 d = v1 - perp; d.z += zOffset;
+          gridLinesObject_->position(a); gridLinesObject_->position(b); gridLinesObject_->position(c);
+          gridLinesObject_->position(a); gridLinesObject_->position(c); gridLinesObject_->position(d);
+        };
+
+        addLineQuad(meshLineVertices[0], meshLineVertices[1]);
 
         if (meshLineVertices.size() == 3) {
-          meshLines_->addPoint(meshLineVertices[1]);
-          meshLines_->addPoint(meshLineVertices[2]);
-          meshLines_->newLine();
+          addLineQuad(meshLineVertices[1], meshLineVertices[2]);
         } else {
-          meshLines_->addPoint(meshLineVertices[1]);
-          meshLines_->addPoint(meshLineVertices[3]);
-          meshLines_->newLine();
-
-          meshLines_->addPoint(meshLineVertices[3]);
-          meshLines_->addPoint(meshLineVertices[2]);
-          meshLines_->newLine();
+          addLineQuad(meshLineVertices[1], meshLineVertices[3]);
+          addLineQuad(meshLineVertices[3], meshLineVertices[2]);
         }
 
-        meshLines_->addPoint(meshLineVertices[2]);
-        meshLines_->addPoint(meshLineVertices[0]);
-        meshLines_->newLine();
+        addLineQuad(meshLineVertices[2], meshLineVertices[0]);
       }
 
     }  // end for loop cols
   }    // end for loop rows
 
   manualObject_->end();
+
+  // Finalize grid lines.
+  if (gridLinesObject_) {
+    gridLinesObject_->end();
+    gridLinesMaterial_->getTechnique(0)->setLightingEnabled(false);
+    gridLinesMaterial_->getTechnique(0)->setSceneBlending(Ogre::SBT_TRANSPARENT_ALPHA);
+    gridLinesMaterial_->getTechnique(0)->setDepthWriteEnabled(false);
+  }
+
   material_->getTechnique(0)->setLightingEnabled(false);
 
   if (alpha < 0.9998) {
@@ -345,13 +363,34 @@ GridMapVisual::ColorArray GridMapVisual::computeColorValues(GridMapVisual::Matri
   }
 }
 
-void GridMapVisual::initializeMeshLines(size_t cols, size_t rows, double resolution, double alpha, double lineWidth) {
-  meshLines_->setColor(0.0, 0.0, 0.0, alpha);
-  meshLines_->setLineWidth(resolution * lineWidth);
-  meshLines_->setMaxPointsPerLine(2);
-  // In the algorithm below, we have to account for max. 4 lines per cell.
-  const size_t nLines = 2 * (rows * (cols - 1) + cols * (rows - 1));
-  meshLines_->setNumLines(nLines);
+void GridMapVisual::initializeGridLinesObject(bool showGridLines, float alpha, double halfLineWidth) {
+  if (!gridLinesObject_) {
+    static uint32_t lineCount = 0;
+    rviz::UniformStringStream ss;
+    ss << "GridLines" << lineCount++;
+    gridLinesObject_ = sceneManager_->createManualObject(ss.str());
+    gridLinesObject_->setDynamic(true);
+    frameNode_->attachObject(gridLinesObject_);
+
+    ss << "Material";
+    gridLinesMaterialName_ = ss.str();
+    gridLinesMaterial_ = Ogre::MaterialManager::getSingleton().create(
+        gridLinesMaterialName_, Ogre::ResourceGroupManager::DEFAULT_RESOURCE_GROUP_NAME);
+    gridLinesMaterial_->setReceiveShadows(false);
+    gridLinesMaterial_->setCullingMode(Ogre::CULL_NONE);
+  }
+
+  gridLinesObject_->clear();
+  gridLinesObject_->setVisible(showGridLines);
+  if (showGridLines) {
+    // Set the grid line color (black with matching alpha).
+    gridLinesMaterial_->getTechnique(0)->getPass(0)->setDiffuse(0.0, 0.0, 0.0, alpha);
+    gridLinesMaterial_->getTechnique(0)->getPass(0)->setAmbient(0.0, 0.0, 0.0);
+    gridLinesMaterial_->getTechnique(0)->getPass(0)->setVertexColourTracking(Ogre::TVC_DIFFUSE);
+    gridLinesObject_->begin(gridLinesMaterialName_, Ogre::RenderOperation::OT_TRIANGLE_LIST);
+    // Pre-set colour for all subsequent vertices.
+    gridLinesObject_->colour(0.0, 0.0, 0.0, alpha);
+  }
 }
 
 GridMapVisual::MaskArray GridMapVisual::computeIsValidMask(std::vector<std::string> basicLayers) {

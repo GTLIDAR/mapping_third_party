@@ -22,7 +22,6 @@ class ColourValue;
 }  // namespace Ogre
 
 namespace rviz {
-class BillboardLine;
 }
 
 namespace grid_map_rviz_plugin {
@@ -64,8 +63,10 @@ class GridMapVisual {
   Ogre::MaterialPtr material_;
   std::string materialName_;
 
-  // Lines for mesh.
-  boost::shared_ptr<rviz::BillboardLine> meshLines_;
+  // ManualObject for grid lines (lightweight OT_LINE_LIST instead of BillboardLine).
+  Ogre::ManualObject* gridLinesObject_;
+  Ogre::MaterialPtr gridLinesMaterial_;
+  std::string gridLinesMaterialName_;
 
   // Grid map.
   grid_map::GridMap map_;
@@ -103,14 +104,12 @@ class GridMapVisual {
                                 Ogre::ColourValue maxColor);
 
   /**
-   * Initialized the meshLines_ object. Should be called before adding lines. Sets the drawing style and allocates the buffer.
-   * @param cols Number of columns that will be drawn.
-   * @param rows Number of rows that will be drawn.
-   * @param resolution Resolution of the map. Used to compute the line thickness.
+   * Initialize the grid lines ManualObject (OT_TRIANGLE_LIST with quads for line width).
+   * @param showGridLines Whether to show grid lines.
    * @param alpha Line opacity.
-   * @param lineWidth line thickness for the mesh lines
+   * @param halfLineWidth Half the line width in world units.
    */
-  void initializeMeshLines(size_t cols, size_t rows, double resolution, double alpha, double lineWidth);
+  void initializeGridLinesObject(bool showGridLines, float alpha, double halfLineWidth);
 
   /**
    * Computes a mask where all the provided basicLayers are finite. Used to do fast lockups during mesh creation.
