@@ -204,7 +204,7 @@ void GridMapVisual::computeVisualization(float alpha, bool showGridLines, bool f
       const bool isLastCol{j == cols - 1};
       const bool isDrawMeshLines{(isNthRow && isNthCol) || (isLastRow && isNthCol) || (isLastCol && isNthRow) || (isLastRow && isLastCol)};
 
-      if (!showGridLines || !isDrawMeshLines) {
+      if (!showGridLines || !isDrawMeshLines || i == 0 || j == 0) {
         continue;
       }
       std::vector<Ogre::Vector3> meshLineVertices = computeMeshLineVertices(i, j, gridCellDecimation, isNthRow, isNthCol, isLastRow,
